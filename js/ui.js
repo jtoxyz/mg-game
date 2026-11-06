@@ -34,17 +34,25 @@ const UI = (() => {
     return `<svg viewBox="0 0 24 24">${hex(12, 12, 8)}${att ? '<rect x="4" y="19" width="16" height="4" rx="1" fill="#3a4049"/>' : ''}</svg>`;
   };
 
+  // のこぎり屋根の工場と、右肩上がりの線を組み合わせたマーク
+  const markSvg = (cls) => `<svg class="${cls}" viewBox="0 0 64 64" aria-hidden="true">
+    <rect x="2" y="2" width="60" height="60" rx="14" fill="#0e5e66"/>
+    <path d="M12 46 V30 L22 22 V30 L32 22 V30 L42 22 V46 Z" fill="#f4efe3"/>
+    <rect x="16" y="36" width="5" height="10" fill="#0e5e66"/><rect x="27" y="36" width="5" height="10" fill="#0e5e66"/>
+    <path d="M38 40 L45 31 L49 35 L55 24" fill="none" stroke="#e8a33d" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+  </svg>`;
+
   // ---------- タイトル ----------
   function title(ctx) {
     return `<div class="title-wrap"><div class="title-card">
-      <div class="logo"><div class="mg">MG</div><div class="sub"><b>戦略MG デジタル</b><span>製造業版 ジュニア・ルール</span></div></div>
+      <div class="logo">${markSvg('logo-mark')}<div class="sub"><b>マネジメントゲーム</b><span>製造業・ジュニアルール ／ ブラウザ版</span></div></div>
       <div class="menu">
         <button class="menu-item" data-a="goSetup" data-v="cpu"><b>CPUと対戦</b><span>自分1人＋CPU社長。いつでも練習できます。</span></button>
         <button class="menu-item" data-a="goSetup" data-v="hotseat"><b>1台を回して対戦</b><span>ゼミのみんなで1台を順番に操作。入札は隠して入力。</span></button>
         <button class="menu-item" data-a="goHost"><b>オンライン：部屋を作る</b><span>部屋コードを共有して、各自のスマホ・PCから参加。</span></button>
         <button class="menu-item" data-a="goJoin"><b>オンライン：部屋に参加</b><span>ホストから聞いた部屋コードを入力。</span></button>
         ${ctx.hasSave ? `<button class="menu-item" data-a="resume"><b>続きから</b><span>${esc(ctx.saveLabel)}</span></button>` : ''}
-        <button class="menu-item" data-a="rules"><b>ルール表</b><span>ルールA・B、期末費用、能力の計算</span></button>
+        <button class="menu-item" data-a="rules"><b>ルール</b><span>ルールA・B、期末費用、能力の計算</span></button>
       </div>
       <p class="title-foot">資本金300で創業し、設備投資・採用・仕入・製造・販売を意思決定。何期か決算を繰り返し、純資産（自己資本）が最も多い社長の勝ちです。</p>
     </div></div>`;
@@ -125,78 +133,30 @@ const UI = (() => {
     </div></div></div>`;
   }
 
-  // ---------- ボード（六角形） ----------
+  // ---------- マーケット一覧 ----------
   function board(s) {
-    const R = 300, r = 78, cx = 320, cy = 320;
-    const ap = (k) => k * Math.cos(Math.PI / 6);   // 頂点半径 → 辺までの距離
-    const vtx = (k, i) => { const a = Math.PI / 3 * i; return [cx + k * Math.cos(a), cy + k * Math.sin(a)]; };
-    const poly = (k) => [0, 1, 2, 3, 4, 5].map(i => vtx(k, i).join(',')).join(' ');
-    // 辺 i（頂点 i→i+1）の中心方向: 30°+60°*i。上（270°）から時計回りにマーケットを置く
-    const dirs = [270, 330, 30, 90, 150, 210];
-    let out = `<svg class="board-svg" viewBox="0 0 640 640" role="img" aria-label="マーケットボード">
-      <polygon points="${poly(R + 18)}" fill="#dcbf8f" stroke="#b9955f" stroke-width="3"/>
-      <polygon points="${poly(R)}" fill="#3d2a1f"/>`;
-    D.MARKETS.forEach((mk, i) => {
-      const phi = dirs[i], m = s.markets.find(x => x.id === mk.id);
-      const rot = phi - 90;
-      let trot = ((rot % 360) + 540) % 360 - 180;
-      const flip = Math.abs(trot) > 90;
-      const g = `translate(${cx},${cy}) rotate(${rot})`;
-      // 仕切り（木の桟）
-      const a1 = (phi - 30) * Math.PI / 180;
-      out += `<line x1="${cx + r * Math.cos(a1)}" y1="${cy + r * Math.sin(a1)}" x2="${cx + R * Math.cos(a1)}" y2="${cy + R * Math.sin(a1)}" stroke="#dcbf8f" stroke-width="7"/>`;
-      // ラベル帯（材料単価｜都市 ボリューム｜価格上限）
-      const dBand = ap(R) - 34, half = dBand * Math.tan(Math.PI / 6) - 6;
-      out += `<g transform="${g}"><g transform="translate(0,${dBand})${flip ? ' rotate(180)' : ''}">
-        <rect x="${-half}" y="-17" width="${half * 2}" height="34" rx="3" fill="#ffffff"/>
-        <rect x="${-half}" y="-17" width="${half * .52}" height="34" fill="${'#1e86d6'}"/>
-        <rect x="${half * .48}" y="-17" width="${half * .52}" height="34" fill="${'#2e9a4a'}"/>
-        <text x="${-half * .74}" y="7" text-anchor="middle" fill="#fff" font-size="20" class="lbl-num">${mk.mat}</text>
-        <text x="${half * .74}" y="7" text-anchor="middle" fill="#fff" font-size="20" class="lbl-num">${mk.cap}</text>
-        <text x="${-half * .12}" y="6" text-anchor="middle" fill="#1b2233" font-size="15" font-weight="700">${mk.name}</text>
-        <text x="${half * .3}" y="8" text-anchor="middle" fill="#d0342c" font-size="21" class="lbl-num">${mk.vol}</text>
-        <text x="${-half * .74}" y="-20" text-anchor="middle" fill="#dcbf8f" font-size="9">材料単価</text>
-        <text x="${half * .74}" y="-20" text-anchor="middle" fill="#dcbf8f" font-size="9">価格(上限)</text>
-      </g></g>`;
-      // 材料キューブと空き枠
-      const cell = 17, rows = [];
-      for (let d = ap(r) + 22; d < dBand - 26; d += cell) rows.push(d);
-      const slots = [];
-      for (const d of rows) {
-        const w = d * Math.tan(Math.PI / 6) * 2 - 22;
-        const n = Math.max(0, Math.floor(w / cell));
-        for (let k = 0; k < n; k++) slots.push([(k - (n - 1) / 2) * cell, d]);
-      }
-      // 外側の行から詰める
-      slots.sort((a, b) => b[1] - a[1] || Math.abs(a[0]) - Math.abs(b[0]));
-      const vol = Math.min(mk.vol, slots.length);
-      let cubesSvg = '';
-      for (let k = 0; k < vol; k++) {
-        const [x, y] = slots[k];
-        cubesSvg += k < m.mats
-          ? `<rect x="${x - 6.5}" y="${y - 6.5}" width="13" height="13" rx="2" fill="#7b3a2a" stroke="#4e2016"/>`
-          : `<rect x="${x - 6}" y="${y - 6}" width="12" height="12" rx="2" fill="none" stroke="#f2c418" stroke-width="1.6" stroke-dasharray="3 2"/>`;
-      }
-      out += `<g transform="${g}">${cubesSvg}</g>`;
-      // 空き表示
-      const empty = mk.vol - m.mats;
-      const [ex, ey] = [cx + (ap(r) + 12) * Math.cos(phi * Math.PI / 180), cy + (ap(r) + 12) * Math.sin(phi * Math.PI / 180)];
-      out += empty ? `<text x="${ex}" y="${ey + 4}" text-anchor="middle" fill="#f2c418" font-size="12" font-weight="700">空き${empty}</text>` : '';
-    });
-    // 中央：意思決定カードの山
     const lc = s.lastCard;
-    const left = s.turnsLeft;
-    out += `<polygon points="${poly(r)}" fill="#dcbf8f"/>
-      <g transform="translate(${cx},${cy})">
-        <rect x="-30" y="-40" width="60" height="80" rx="6" fill="#2537a0" stroke="#fff" stroke-width="2" transform="rotate(-8)"/>
-        <rect x="-30" y="-40" width="60" height="80" rx="6" fill="#2a3fb0" stroke="#fff" stroke-width="2"/>
-        <text y="6" text-anchor="middle" fill="#fff" font-size="22" class="lbl-num">MG</text>
-        <text y="28" text-anchor="middle" fill="#fff" font-size="10">残り${Math.max(0, left)}</text>
-      </g>`;
-    out += `<text x="${cx}" y="${cy + R + 12}" text-anchor="middle" fill="#3d2a1f" font-size="12">ストッカー：材料 ${D.STOCKER_PRICE}（無制限・販売不可）</text>`;
-    out += '</svg>';
-    out += `<div class="board-legend"><span><i style="background:#7b3a2a"></i>マーケットの材料</span><span><i style="border:1.5px dashed #f2c418"></i>空き＝製品を売れる枠</span>${lc ? `<span>直前：${pname(s, lc.pid)} ${lc.kind === 'risk' ? 'リスクカード「' + esc(D.RISK_CARDS.find(c => c.id === lc.id).title) + '」' : lc.kind === 'skip' ? '休み' : '意思決定'}</span>` : ''}</div>`;
-    return out;
+    const maxCap = Math.max(...D.MARKETS.map(m => m.cap));
+    const tiles = D.MARKETS.map(mk => {
+      const m = s.markets.find(x => x.id === mk.id), empty = mk.vol - m.mats;
+      const slots = Array.from({ length: mk.vol }, (_, k) => `<i class="slot ${k < m.mats ? 'full' : 'open'}"></i>`).join('');
+      return `<article class="mkt ${empty ? 'has-room' : ''}">
+        <header><h3>${mk.name}</h3><span class="room ${empty ? '' : 'zero'}">空き ${empty}</span></header>
+        <dl class="mkt-meta"><div><dt>材料</dt><dd class="num">${mk.mat}</dd></div><div><dt>上限価格</dt><dd class="num">${mk.cap}</dd></div><div><dt>容量</dt><dd class="num">${mk.vol}</dd></div></dl>
+        <div class="cap-meter" aria-hidden="true"><i style="width:${Math.round(mk.cap / maxCap * 100)}%"></i></div>
+        <div class="slots" aria-label="材料${m.mats}個・空き${empty}個">${slots}</div>
+      </article>`;
+    }).join('');
+    const last = lc ? `${pname(s, lc.pid)}：${lc.kind === 'risk' ? 'リスクカード「' + esc(D.RISK_CARDS.find(c => c.id === lc.id).title) + '」' : lc.kind === 'skip' ? '休み' : '意思決定'}` : 'まだありません';
+    return `<div class="market-board">
+      <div class="mkt-strip">
+        <div class="deck">${markSvg('deck-mark')}<div><small>山札（この期の残り）</small><b class="num">${Math.max(0, s.turnsLeft)}</b></div></div>
+        <div><small>直前のカード</small><span>${last}</span></div>
+        <div><small>ストッカー</small><span>材料 ${D.STOCKER_PRICE}・無制限（販売不可）</span></div>
+      </div>
+      <div class="mkt-grid">${tiles}</div>
+      <p class="board-legend"><span><i class="slot full"></i>市場に残っている材料</span><span><i class="slot open"></i>空き＝製品を売れる枠</span><span>バーは上限価格の高さ</span></p>
+    </div>`;
   }
 
   // ---------- 会社盤 ----------
@@ -209,7 +169,6 @@ const UI = (() => {
       const working = i < P.workers; // 表示用：上から順に稼働
       return `<span class="machine ${working ? '' : 'idle'}" title="${m.type === 'large' ? '大型機械' : '小型機械'}">${nutSvg(m.type === 'large', m.att)}${m.type === 'large' ? '大型' : m.att ? '小+ア' : '小型'} ${E.machineCap(P, m)}</span>`;
     }).join('') : '<span class="tok-label">機械なし</span>';
-    const green = (on, label) => `<span class="green-slot"><i class="chipdot ${on ? 'green' : 'off'}"></i>${label}</span>`;
     return `<div class="sheet company">
       <div class="tabs" role="tablist" aria-label="会社を選ぶ">${tabs}</div>
       <div class="company-head">${swatch(P)}<h2>${esc(P.company)}</h2><span class="ceo">${P.ceo ? '社長 ' + esc(P.ceo) + '・' : ''}${ctrlTag(P)}${P.ctrl === 'cpu' ? '（' + esc(P.ai) + '型）' : ''}</span></div>
@@ -221,30 +180,31 @@ const UI = (() => {
         <div class="kpi"><small>販売能力</small><b>${sc}</b></div>
         <div class="kpi"><small>純資産(前期末)</small><b>${sgn(E.netAssets(P))}</b></div>
       </div>
-      <div class="boardsheet">
-        <div class="zone rd"><span class="zt">研究開発</span>
-          <div class="tokens">${P.chips.blue ? Array.from({ length: P.chips.blue }, () => '<i class="chipdot blue"></i>').join('') : '<span class="tok-label">青チップなし</span>'}</div>
-          <div class="cap">価格競争力 −${P.chips.blue * 2}</div>
-        </div>
-        <div class="zone wh"><span class="zt">材料倉庫</span>
-          <div class="cols"><div><div class="tokens">${cubes(P.mat)}</div><div class="cap">材料 <span class="count">${P.mat}</span>個</div></div>${green(P.chips.md, 'マーチャン<br>ダイザー')}</div>
-        </div>
-        <div class="zone fac"><span class="zt">工場</span>
-          <div class="cols"><div style="display:grid;gap:6px">
-            <div class="tokens">${machinesHtml}</div>
-            <div class="split"><span class="tok-label">ワーカー</span><div class="tokens">${pawns(P.workers, '#eef0f4')}</div></div>
-            <div><div class="tokens">${cubes(P.wip, 'wip')}</div><div class="cap">仕掛品 <span class="count">${P.wip}</span>個 ／ 生産能力 ${pc}${P.machines.length > P.workers ? `（ワーカー不足で${P.machines.length - P.workers}台停止中）` : ''}</div></div>
-          </div>${green(P.chips.pac, 'PAC<br>生産性')}</div>
-        </div>
-        <div class="zone ins"><span class="zt" style="border-color:#c9a80f;color:#8a6f00">保険</span><i class="chipdot ${P.chips.yellow ? 'yellow' : 'off'}"></i></div>
-        <div class="zone shop"><span class="zt">営業所</span>
-          <div class="cols"><div style="display:grid;gap:6px">
-            <div><div class="tokens">${cubes(P.prod, 'prod')}</div><div class="cap">製品 <span class="count">${P.prod}</span>個</div></div>
-            <div class="split"><span class="tok-label">セールスマン</span><div class="tokens">${pawns(P.salesmen, '#ffffff')}</div></div>
-            <div class="split"><span class="tok-label">広告</span><div class="tokens">${P.chips.red ? Array.from({ length: P.chips.red }, () => '<i class="chipdot red"></i>').join('') : '<span class="tok-label">なし</span>'}</div></div>
-          </div>${green(P.chips.mr, 'マーケット<br>リサーチ')}</div>
-        </div>
+      <div class="flow" aria-label="材料から製品までの流れ">
+        <section class="stage"><h4>材料</h4><b class="num">${P.mat}</b><div class="tokens">${cubes(P.mat)}</div></section>
+        <span class="arrow" aria-hidden="true">投入<i>→</i></span>
+        <section class="stage"><h4>仕掛品</h4><b class="num">${P.wip}</b><div class="tokens">${cubes(P.wip, 'wip')}</div></section>
+        <span class="arrow" aria-hidden="true">完成<i>→</i></span>
+        <section class="stage"><h4>製品</h4><b class="num">${P.prod}</b><div class="tokens">${cubes(P.prod, 'prod')}</div></section>
       </div>
+      <div class="ops">
+        <section class="op"><h4>生産設備<span>生産能力 ${pc}</span></h4>
+          <div class="tokens">${machinesHtml}</div>
+          <div class="split"><span class="tok-label">ワーカー ${P.workers}人</span><div class="tokens">${pawns(P.workers, '#eef0f4')}</div></div>
+          ${P.machines.length > P.workers ? `<p class="warn-line">ワーカー不足で${P.machines.length - P.workers}台が止まっています</p>` : ''}
+        </section>
+        <section class="op"><h4>営業<span>販売能力 ${sc}</span></h4>
+          <div class="split"><span class="tok-label">セールスマン ${P.salesmen}人</span><div class="tokens">${pawns(P.salesmen, '#ffffff')}</div></div>
+          <div class="split"><span class="tok-label">広告 ${P.chips.red}枚</span><div class="tokens">${P.chips.red ? Array.from({ length: P.chips.red }, () => '<i class="chipdot red"></i>').join('') : ''}</div></div>
+        </section>
+      </div>
+      <ul class="chips" aria-label="この期のチップ">
+        <li class="${P.chips.blue ? 'on' : ''}"><i class="chipdot ${P.chips.blue ? 'blue' : 'off'}"></i>研究開発 ${P.chips.blue}枚<small>競争力 −${P.chips.blue * 2}</small></li>
+        <li class="${P.chips.pac ? 'on' : ''}"><i class="chipdot ${P.chips.pac ? 'green' : 'off'}"></i>PAC生産性</li>
+        <li class="${P.chips.md ? 'on' : ''}"><i class="chipdot ${P.chips.md ? 'green' : 'off'}"></i>マーチャンダイザー</li>
+        <li class="${P.chips.mr ? 'on' : ''}"><i class="chipdot ${P.chips.mr ? 'green' : 'off'}"></i>マーケットリサーチ</li>
+        <li class="${P.chips.yellow ? 'on' : ''}"><i class="chipdot ${P.chips.yellow ? 'yellow' : 'off'}"></i>保険</li>
+      </ul>
       <div class="row"><button class="btn small" data-a="books" data-v="ledger">現金出納帳</button><button class="btn small" data-a="books" data-v="fin">決算書</button><button class="btn small" data-a="books" data-v="rank">順位表</button></div>
     </div>`;
   }
@@ -604,22 +564,22 @@ const UI = (() => {
     const F = h.Fd;
     const maxv = Math.max(h.PQ, h.VQ + h.F, 1);
     const pct = (v) => Math.max(0, Math.round(v / maxv * 100));
-    const strac = `<div class="strac" aria-label="STRAC図">
+    const strac = `<div class="strac" aria-label="変動損益の図">
       <div><div class="blk pq" style="height:100%"><small>売上高 PQ</small><b>${h.PQ}</b><small>P ${h.P} × Q ${h.Q}</small></div></div>
       <div style="grid-template-rows:${pct(h.VQ) || 1}fr ${pct(Math.max(h.MQ, 0)) || 1}fr"><div class="blk vq"><small>変動費 VQ</small><b>${h.VQ}</b></div><div class="blk mq"><small>付加価値 MQ</small><b>${sgn(h.MQ)}</b></div></div>
       <div style="grid-template-rows:${pct(h.F) || 1}fr ${pct(Math.abs(h.G)) || 1}fr"><div class="blk f"><small>固定費 F</small><b>${h.F}</b></div><div class="blk g ${h.G < 0 ? 'loss' : ''}"><small>経常利益 G</small><b>${sgn(h.G)}</b></div></div>
     </div>`;
     const ec = h.endCost;
     return `<div class="fin-grid">
-      <div class="fin"><h3><span class="no">20</span>戦略会計 STRAC</h3>${strac}
+      <div class="fin"><h3>変動損益（MQ会計）</h3>${strac}
         ${t([['売上単価 P', h.P], ['変動単価 vP', h.vP], ['付加価値単価 mP', h.P - h.vP], ['販売個数 Q', h.Q], ['付加価値率 m率', h.PQ ? Math.round(h.MQ / h.PQ * 100) + '%' : '−'], ['損益分岐点比率 F/MQ', h.MQ > 0 ? Math.round(h.F / h.MQ * 100) + '%' : '−']])}</div>
-      <div class="fin"><h3><span class="no">19</span>固定費 F</h3>${t([['減価償却費', F.dep], ['労務費 シ', F.シ], ['製造経費 ス', F.ス], ['販売費 セ', F.セ], ['一般管理費 ソ', F.ソ], ['営業外費用 タ', F.タ], ['研究開発費 チ', F.チ], ['固定費合計', h.F, 'total']])}
+      <div class="fin"><h3>固定費 F</h3>${t([['減価償却費', F.dep], ['労務費 シ', F.シ], ['製造経費 ス', F.ス], ['販売費 セ', F.セ], ['一般管理費 ソ', F.ソ], ['営業外費用 タ', F.タ], ['研究開発費 チ', F.チ], ['固定費合計', h.F, 'total']])}
         <p class="note">期末費用：ワーカー${ec.r.w}×人数、機械${ec.r.m}×延べ${ec.machines}台、セールスマン${ec.r.s}×人数、一般管理費${ec.r.a}×${ec.heads}人${h.emergency ? `。資金不足のため緊急借入 ${h.emergency}` : ''}</p></div>
-      <div class="fin"><h3><span class="no">22</span>損益と法人税</h3>${t([['付加価値 MQ', h.MQ], ['固定費 F', -h.F], ['経常利益 G', h.G, 'total'], ['火災損失', -h.special.fire], ['製造ミス損失', -h.special.mistake], ['盗難・減耗損失', -h.special.theft], ['機械の故障損失', -(h.special.machine || 0)],['受取保険金', h.special.ins], ['機械売却損益', h.special.saleGain], ['税引前当期純利益', h.pretax, 'total'], ['前期繰越利益剰余金', h.prevRE], ['法人税等（50%）', -h.tax], ['当期純利益', h.net, 'total'], ['次期繰越利益剰余金', h.re]])}</div>
-      <div class="fin"><h3><span class="no">23</span>貸借対照表 B/S</h3>${t([['現金', h.bs.cash], ['材料', h.bs.mat], ['仕掛品', h.bs.wip], ['製品', h.bs.prod], ['固定資産（機械）', h.bs.fixed], ['資産合計', h.bs.assets, 'total'], ['借入金', h.bs.loan], ['未払法人税等', h.bs.taxDue], ['負債合計', h.bs.liab, 'total'], ['資本金', h.bs.capital], ['繰越利益剰余金', h.bs.re], ['純資産合計', h.bs.equity, 'total'], ['差（0ならOK）', h.bs.diff]])}</div>
-      <div class="fin"><h3><span class="no">14</span>原価計算　1.材料（倉庫）</h3>${costBox('材料', c.m, '材料仕入', null, '火災', '投入材料費')}</div>
-      <div class="fin"><h3><span class="no">14</span>原価計算　2.仕掛品（工場）</h3>${costBox('仕掛品', c.w, '投入材料費', '投入費 コ', '製造ミス', '当期製品製造原価')}</div>
-      <div class="fin"><h3><span class="no">14</span>原価計算　3.製品（営業所）</h3>${costBox('製品', c.p, '完成品', '完成費 サ', '盗難・減耗', '売上原価 VQ')}</div>
+      <div class="fin"><h3>損益と法人税</h3>${t([['付加価値 MQ', h.MQ], ['固定費 F', -h.F], ['経常利益 G', h.G, 'total'], ['火災損失', -h.special.fire], ['製造ミス損失', -h.special.mistake], ['盗難・減耗損失', -h.special.theft], ['機械の故障損失', -(h.special.machine || 0)],['受取保険金', h.special.ins], ['機械売却損益', h.special.saleGain], ['税引前当期純利益', h.pretax, 'total'], ['前期繰越利益剰余金', h.prevRE], ['法人税等（50%）', -h.tax], ['当期純利益', h.net, 'total'], ['次期繰越利益剰余金', h.re]])}</div>
+      <div class="fin"><h3>貸借対照表 B/S</h3>${t([['現金', h.bs.cash], ['材料', h.bs.mat], ['仕掛品', h.bs.wip], ['製品', h.bs.prod], ['固定資産（機械）', h.bs.fixed], ['資産合計', h.bs.assets, 'total'], ['借入金', h.bs.loan], ['未払法人税等', h.bs.taxDue], ['負債合計', h.bs.liab, 'total'], ['資本金', h.bs.capital], ['繰越利益剰余金', h.bs.re], ['純資産合計', h.bs.equity, 'total'], ['差（0ならOK）', h.bs.diff]])}</div>
+      <div class="fin"><h3>原価計算　1.材料（倉庫）</h3>${costBox('材料', c.m, '材料仕入', null, '火災', '投入材料費')}</div>
+      <div class="fin"><h3>原価計算　2.仕掛品（工場）</h3>${costBox('仕掛品', c.w, '投入材料費', '投入費 コ', '製造ミス', '当期製品製造原価')}</div>
+      <div class="fin"><h3>原価計算　3.製品（営業所）</h3>${costBox('製品', c.p, '完成品', '完成費 サ', '盗難・減耗', '売上原価 VQ')}</div>
     </div>`;
   }
 
@@ -652,12 +612,12 @@ const UI = (() => {
         ${lc.detail ? `<p class="detail">${esc(lc.detail)}</p>` : ''}</div></div>
         <p class="close-hint">クリックで閉じる${rest ? `（あと${rest}枚）` : ''}</p></div>`;
     }
-    return `<div class="card-pop" data-a="closeCard"><div class="mgcard decision"><div style="display:grid;gap:14px;justify-items:center"><span class="mg">MG</span><b>${lc.kind === 'skip' ? '休み' : '意思決定カード'}</b><div class="who">${who}</div></div></div></div>`;
+    return `<div class="card-pop" data-a="closeCard"><div class="mgcard decision"><div style="display:grid;gap:14px;justify-items:center">${markSvg('card-mark')}<b>${lc.kind === 'skip' ? '休み' : '意思決定カード'}</b><div class="who">${who}</div></div></div></div>`;
   }
 
   function rules() {
     const ec = [1, 2, 3, 4, 5].map(p => { const r = D.END_COST[p]; return `<tr><td>${p}期</td><td>${r.w}(${r.wl})</td><td>${r.m}</td><td>${r.s}(${r.sl})</td><td>${r.a}</td></tr>`; }).join('');
-    return modal(`<div class="modal-head"><h2>製造業版 ジュニア・ルール表</h2><button class="btn small" data-a="closeModal">閉じる</button></div>
+    return modal(`<div class="modal-head"><h2>ルール（製造業・ジュニア）</h2><button class="btn small" data-a="closeModal">閉じる</button></div>
     <div class="rules">
       <div><h3>1ターンでする事</h3><ol><li>（必要なら）ルールBを何回でも</li><li>意思決定カードを引く。5枚に1枚は「リスクカードを引く」で、その場合はリスクカードに従って終わり</li><li>ルールAの項目から1つ選んで実行</li></ol>
       <p>期首処理 → ゲーム → 期末処理・決算 を1期とし、何期か繰り返して純資産が最も多い人の勝ちです。各チップ（赤・青・緑・黄）は1期間のみ有効で、期末に全て返却します。</p></div>

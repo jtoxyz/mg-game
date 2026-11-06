@@ -96,7 +96,7 @@ const App = (() => {
         ${st.mode === 'host' ? `<p>部屋コード <b class="room-code" style="font-size:28px">${UI.esc(st.code)}</b></p>
           ${st.s ? st.s.order.filter(id => st.s.players[id].ctrl === 'remote').map(id => `<div class="row"><span>${UI.esc(st.s.players[id].company)}（参加者）</span><button class="btn small" data-a="toCpu" data-v="${id}">CPUに交代</button></div>`).join('') : ''}
           ${st.s && st.s.order.some(id => st.s.players[id].ctrl === 'remote') ? '<p class="note">通信が切れて戻れない参加者がいるときは、その会社をCPUに任せて続けられます。</p>' : ''}` : ''}
-        <div class="row"><button class="btn" data-a="books" data-v="rank">順位表</button><button class="btn" data-a="rules">ルール表</button><button class="btn danger" data-a="home">タイトルへ戻る</button></div>
+        <div class="row"><button class="btn" data-a="books" data-v="rank">順位表</button><button class="btn" data-a="rules">ルール</button><button class="btn danger" data-a="home">タイトルへ戻る</button></div>
         <p class="note">${st.mode === 'guest' ? 'タイトルに戻っても、同じ部屋コードで参加し直せば続きから遊べます。' : 'ゲームはこの端末に自動保存されます。タイトルの「続きから」で再開できます。'}</p>`, true);
     }
     if (st.card && st.s) html += UI.cardPop(st.s, st.card, st.cardQueue.length);
