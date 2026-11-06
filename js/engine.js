@@ -687,7 +687,7 @@ const Engine = (() => {
     p.closeQ = P.prod; p.closeV = Math.min(p.avg * P.prod, p.totV - p.lossV);
     p.outQ = A.saleQ; p.outV = p.totV - p.closeV - p.lossV;
 
-    // 変動損益計算（MQ会計）
+    // STRAC（変動損益計算書）
     const PQ = A.saleV, Q = A.saleQ, VQ = p.outV, MQ = PQ - VQ;
     const C = A.cols;
     const Fd = { dep, シ: C['シ'] || 0, ス: C['ス'] || 0, セ: C['セ'] || 0, ソ: C['ソ'] || 0, タ: C['タ'] || 0, チ: C['チ'] || 0 };
