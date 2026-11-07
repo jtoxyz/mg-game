@@ -1,0 +1,8 @@
+{
+  "name": "mg-game",
+  "private": true,
+  "description": "マネジメントゲーム（製造業・ジュニアルール）のブラウザ版",
+  "scripts": {
+    "test": "node --test"
+  }
+}

@@ -4,20 +4,31 @@
 
 const Engine = (() => {
   const D = (typeof MG !== 'undefined') ? MG : require('./data.js');
-  const MK = Object.fromEntries(D.MARKETS.map(m => [m.id, m]));
+  const R = D.RULE;
+  const VERSION = 2;
+  const hasOwn = (o, k) => o != null && Object.prototype.hasOwnProperty.call(o, k);
+  // プロトタイプを持たない表にして、通信で届いた "constructor" などのキーに反応しないようにする
+  const MK = Object.create(null);
+  D.MARKETS.forEach(m => { MK[m.id] = m; });
+  const isMarket = (id) => typeof id === 'string' && hasOwn(MK, id);
   const sum = (a) => a.reduce((x, y) => x + y, 0);
-  const isInt = (n) => Number.isInteger(n);
+  const int = (v) => { const n = Number(v); return Number.isFinite(n) ? Math.trunc(n) : 0; };
+  const arr = (v) => (Array.isArray(v) ? v : []);
+  const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+  const offerText = (list) => list.map(o => `${MK[o.m].name}${o.q}個`).join('・');
 
   // ---------- 生成 ----------
   function newGame(cfg, seats) {
+    cfg = cfg || {};
     const s = {
-      v: 1, rev: 0,
-      cfg: { periods: cfg.periods || 3, rounds: cfg.rounds || 10 },
+      v: VERSION, rev: 0,
+      cfg: { periods: clamp(int(cfg.periods) || 3, 1, D.MAX_PERIODS), rounds: clamp(int(cfg.rounds) || 10, 1, 50) },
       period: 0, phase: 'turn', step: 'pre',
       order: seats.map((_, i) => 'p' + i),
       cur: 0, dir: 1, turnsLeft: 0,
       markets: D.MARKETS.map(m => ({ id: m.id, mats: m.vol })),
       players: {}, pending: null, lastCard: null, lastAuction: null,
+      cardSeq: 0, auctionSeq: 0,
       log: [],
     };
     seats.forEach((st, i) => { s.players['p' + i] = newPlayer('p' + i, st, i); });
@@ -29,7 +40,7 @@ const Engine = (() => {
     return {
       id, company: st.company, ceo: st.ceo || '', ctrl: st.ctrl, owner: st.owner || null,
       color: D.COMPANY_COLORS[i % D.COMPANY_COLORS.length],
-      ai: st.ai || ['堅実', '積極', 'バランス'][i % 3],
+      ai: D.AI_TYPES.includes(st.ai) ? st.ai : D.AI_TYPES[i % D.AI_TYPES.length],
       cash: 0, loan: 0, taxDue: 0, re: 0,
       mat: 0, wip: 0, prod: 0, matV: 0, wipV: 0, prodV: 0,
       machines: [], mid: 0, workers: 0, salesmen: 0,
@@ -43,6 +54,7 @@ const Engine = (() => {
   function log(s, pid, t) {
     s.log.push({ p: s.period, pid, t });
     if (s.log.length > 160) s.log.splice(0, s.log.length - 160);
+    return t;
   }
 
   function book(P, col, amt, d) {
@@ -55,23 +67,31 @@ const Engine = (() => {
 
   // 期首・期末の支払いで現金が足りないときの緊急借入（デジタル版の補助ルール）
   function emergency(s, P) {
-    if (P.cash >= 0) return;
-    const amt = Math.ceil(-P.cash / 10) * 10;
+    if (P.cash >= 0) return 0;
+    const amt = Math.ceil(-P.cash / R.loanUnit) * R.loanUnit;
     book(P, 'オ', amt, '緊急借入（資金不足）');
     P.loan += amt;
     log(s, P.id, `資金不足のため緊急借入 ${amt}`);
+    return amt;
   }
 
   function machineCap(P, m) {
-    return (m.type === 'large' ? 4 : 1 + (m.att ? 1 : 0)) + (P.chips.pac ? 1 : 0);
+    return (m.type === 'large' ? R.capLarge : R.capSmall + (m.att ? R.capAttach : 0)) + (P.chips.pac ? R.capPac : 0);
+  }
+  // ワーカーは能力の大きい機械から配置する。稼働している機械の id を返す
+  function staffedMachines(P) {
+    return P.machines.map((m, i) => ({ id: m.id, i, c: machineCap(P, m) }))
+      .sort((a, b) => b.c - a.c || a.i - b.i)
+      .slice(0, P.workers).map(x => x.id);
   }
   function prodCap(P) {
-    const caps = P.machines.map(m => machineCap(P, m)).sort((a, b) => b - a);
-    return sum(caps.slice(0, P.workers));
+    const on = staffedMachines(P);
+    return sum(P.machines.filter(m => on.includes(m.id)).map(m => machineCap(P, m)));
   }
   function salesCap(P) {
-    return 2 * P.salesmen + 2 * Math.min(P.chips.red, 2 * P.salesmen);
+    return R.salesPerSalesman * P.salesmen + R.salesPerAd * Math.min(P.chips.red, R.adPerSalesman * P.salesmen);
   }
+  const canSell = (P) => P.prod > 0 && salesCap(P) > 0;
   function empty(s, mid) {
     const m = s.markets.find(x => x.id === mid);
     return MK[mid].vol - m.mats;
@@ -157,8 +177,10 @@ const Engine = (() => {
     return D.RISK_CARDS[0];
   }
 
+  // リスクカードを適用する。waits = プレイヤーの選択を待つか、detail = カードに添える結果
   function applyRisk(s, P, card) {
-    const name = P.company;
+    let detail = '';
+    const note = (t) => { detail = log(s, P.id, t); };
     switch (card.id) {
       case 'fire': {
         const q = P.mat, insured = q > 0 && P.chips.yellow > 0;
@@ -167,21 +189,22 @@ const Engine = (() => {
           book(P, 'エ', q * D.INSURANCE.fire, `火災保険金 ${q}個×${D.INSURANCE.fire}`);
           P.acc.ins += q * D.INSURANCE.fire; P.chips.yellow = 0;
         }
-        log(s, P.id, `倉庫火災：材料${q}個を焼失${insured ? '（保険金あり）' : ''}`);
+        note(`倉庫火災：材料${q}個を焼失${insured ? `（保険金 ${q * D.INSURANCE.fire}）` : ''}`);
         break;
       }
       case 'mistake': {
         const q = Math.min(1, P.wip); P.wip -= q; P.acc.mistakeQ += q;
-        log(s, P.id, `製造ミス：仕掛品${q}個を廃棄`);
+        note(q ? '製造ミス：仕掛品1個を廃棄' : '製造ミス：仕掛品がないため影響なし');
         break;
       }
       case 'theft': case 'claim': {
         const q = card.id === 'theft' ? P.prod : Math.min(1, P.prod); P.prod -= q; P.acc.theftQ += q;
-        if (card.id === 'theft' && q && P.chips.yellow) {
+        const insured = card.id === 'theft' && q > 0 && P.chips.yellow > 0;
+        if (insured) {
           book(P, 'エ', q * D.INSURANCE.theft, `盗難保険金 ${q}個×${D.INSURANCE.theft}`);
           P.acc.ins += q * D.INSURANCE.theft; P.chips.yellow = 0;
         }
-        log(s, P.id, `${card.title}：製品${q}個を失う`);
+        note(q ? `${card.title}：製品${q}個を失う${insured ? `（保険金 ${q * D.INSURANCE.theft}）` : ''}` : `${card.title}：製品がないため影響なし`);
         break;
       }
       case 'quitW': case 'quitS': {
@@ -190,39 +213,40 @@ const Engine = (() => {
         if (had) {
           P[k]--; if (k === 'workers') P.acc.retW++; else P.acc.retS++;
           book(P, 'ソ', D.RETIRE_FEE, `退職費（${card.title}）`);
-          emergency(s, P);
         }
-        log(s, P.id, `${card.title}${had ? `：退職費${D.RETIRE_FEE}を支払い` : '（対象者なし）'}`);
+        note(`${card.title}${had ? `：退職費${D.RETIRE_FEE}を支払い` : '（対象者なし）'}`);
+        if (had) emergency(s, P);
         break;
       }
       case 'special': {
-        const max = Math.min(5, Math.floor(P.cash / 10));
+        const { price } = D.SPECIAL_BUY;
+        const max = Math.min(D.SPECIAL_BUY.max, Math.floor(P.cash / price));
         if (max > 0) {
           s.phase = 'risk';
-          s.pending = { kind: 'special', pid: P.id, max, price: 10 };
-          return true;
+          s.pending = { kind: 'special', pid: P.id, max, price };
+          return { waits: true, detail: `材料を単価${price}で最大${max}個まで購入できます` };
         }
-        log(s, P.id, '材料の特別購入：資金不足のため見送り');
+        note('材料の特別購入：資金不足のため見送り');
         break;
       }
       case 'monopoly': {
         const m = D.MARKETS[Math.floor(Math.random() * D.MARKETS.length)];
-        const max = Math.min(5, salesCap(P), P.prod);
+        const max = Math.min(D.MONOPOLY_MAX, salesCap(P), P.prod);
         if (max > 0) {
           s.phase = 'risk';
           s.pending = { kind: 'monopoly', pid: P.id, max, market: m.id, price: m.cap };
-          return true;
+          return { waits: true, detail: `${m.name}で上限価格${m.cap}のまま最大${max}個を販売できます` };
         }
-        log(s, P.id, `独占販売（${m.name}・${m.cap}）：販売できる製品がないため見送り`);
+        note(`独占販売（${m.name}・${m.cap}）：販売できる製品がないため見送り`);
         break;
       }
       case 'reverse':
         s.dir *= -1;
-        log(s, P.id, '逆回り：手番の順序が逆に');
+        note('逆回り：手番の順序が逆に');
         break;
       case 'sick':
         P.skip = true;
-        log(s, P.id, '社長が倒れた：次の手番は休み');
+        note('社長が倒れた：次の手番は休み');
         break;
       case 'breakdown': {
         // 機械はすべて廃棄。帳簿価額を特別損失にする（現金の動きはなし）
@@ -231,24 +255,24 @@ const Engine = (() => {
           const bv = sum(P.machines.map(m => m.bv + (m.att ? m.attBv : 0)));
           P.acc.machineLoss += bv;
           P.machines = [];
-          log(s, P.id, `工場の機械が壊れる：機械${n}台がすべて使えなくなった（損失${bv}）`);
-        } else log(s, P.id, '工場の機械が壊れる：機械がないため影響なし');
+          note(`工場の機械が壊れる：機械${n}台がすべて使えなくなった（損失${bv}）`);
+        } else note('工場の機械が壊れる：機械がないため影響なし');
         break;
       }
       case 'rdHit':
         P.chips.blue++;
-        log(s, P.id, '研究開発の成功：青チップ+1');
+        note('研究開発の成功：青チップ+1');
         break;
       case 'rdFail':
-        if (P.chips.blue) P.chips.blue--;
-        log(s, P.id, '研究開発の失敗：青チップ-1');
+        if (P.chips.blue) { P.chips.blue--; note('研究開発の失敗：青チップ-1'); }
+        else note('研究開発の失敗：青チップがないため影響なし');
         break;
       case 'adHit':
-        if (P.chips.red < 2 * P.salesmen) { P.chips.red++; log(s, P.id, '広告が大ヒット：赤チップ+1'); }
-        else log(s, P.id, '広告が大ヒット：これ以上は有効にならないため影響なし');
+        if (P.chips.red < R.adPerSalesman * P.salesmen) { P.chips.red++; note('広告が大ヒット：赤チップ+1'); }
+        else note('広告が大ヒット：これ以上は有効にならないため影響なし');
         break;
     }
-    return false;
+    return { waits: false, detail };
   }
 
   // ---------- アクション ----------
@@ -256,7 +280,8 @@ const Engine = (() => {
   const RULE_A = new Set(['buyMat', 'buyEquip', 'produce', 'hire', 'ad', 'rd', 'sell', 'pass']);
 
   function act(s, a) {
-    const P = s.players[a && a.pid];
+    if (!a || typeof a !== 'object' || typeof a.type !== 'string') return '不明なアクションです';
+    const P = typeof a.pid === 'string' && hasOwn(s.players, a.pid) ? s.players[a.pid] : null;
     if (!P) return 'プレイヤーが見つかりません';
     const err = dispatch(s, P, a);
     if (!err) s.rev++;
@@ -269,7 +294,9 @@ const Engine = (() => {
       if (s.phase !== 'periodEnd') return '期末処理中ではありません';
       startPeriod(s); return null;
     }
-    if (t === 'bid') return doBid(s, P, a);
+    if (t === 'join') return doJoin(s, P, a);
+    if (t === 'price') return doPrice(s, P, a);
+    if (t === 'rebid') return doRebid(s, P, a);
     if (t === 'riskChoice') return doRiskChoice(s, P, a);
     if (s.phase !== 'turn' || curPid(s) !== P.id) return 'あなたの手番ではありません';
     if (t === 'draw') {
@@ -291,20 +318,21 @@ const Engine = (() => {
   }
 
   function doDraw(s, P) {
+    const n = s.cardSeq = (s.cardSeq || 0) + 1;
     if (P.skip) {
       P.skip = false;
-      s.lastCard = { pid: P.id, kind: 'skip' };
+      s.lastCard = { n, pid: P.id, kind: 'skip' };
       log(s, P.id, '社長の病気のため休み');
       endTurn(s);
       return null;
     }
     if (Math.random() < D.RISK_RATIO) {
       const card = drawRiskCard();
-      s.lastCard = { pid: P.id, kind: 'risk', id: card.id };
-      const waits = applyRisk(s, P, card);
-      if (!waits) endTurn(s);
+      const r = applyRisk(s, P, card);
+      s.lastCard = { n, pid: P.id, kind: 'risk', id: card.id, detail: r.detail };
+      if (!r.waits) endTurn(s);
     } else {
-      s.lastCard = { pid: P.id, kind: 'decision' };
+      s.lastCard = { n, pid: P.id, kind: 'decision' };
       s.step = 'decide';
     }
     return null;
@@ -312,19 +340,19 @@ const Engine = (() => {
 
   const ruleB = {
     chip(s, P, a) {
-      const c = a.chip, cost = D.PRICE[c];
-      const col = { yellow: 'ソ', pac: 'ス', md: 'ソ', mr: 'セ' }[c];
-      if (!col) return '不明なチップです';
+      const c = a.chip;
+      if (typeof c !== 'string' || !hasOwn(D.CHIPS, c)) return '不明なチップです';
+      const def = D.CHIPS[c], cost = D.PRICE[c];
       if (P.chips[c]) return 'このチップは1期に1枚までです';
       if (P.cash < cost) return '現金が足りません';
-      const label = { yellow: '保険（黄）', pac: 'PAC生産性（緑）', md: 'マーチャンダイザー（緑）', mr: 'マーケットリサーチ（緑）' }[c];
-      book(P, col, cost, label);
+      book(P, def.col, cost, def.label);
       P.chips[c] = 1;
-      log(s, P.id, `${label}を購入`);
+      log(s, P.id, `${def.label}を購入`);
       return null;
     },
     transfer(s, P, a) {
-      const n = a.n | 0;
+      if (a.dir !== 'w2s' && a.dir !== 's2w') return '配置転換の向きを指定してください';
+      const n = int(a.n);
       if (n < 1) return '人数を指定してください';
       const from = a.dir === 'w2s' ? 'workers' : 'salesmen';
       const to = a.dir === 'w2s' ? 'salesmen' : 'workers';
@@ -343,7 +371,7 @@ const Engine = (() => {
         book(P, 'イ', D.SELLBACK.attach, 'アタッチメント売却');
         P.acc.mSaleProceeds += D.SELLBACK.attach; P.acc.mSaleBV += m.attBv;
         m.att = false; m.attBv = 0;
-        log(s, P.id, 'アタッチメントを売却（10）');
+        log(s, P.id, `アタッチメントを売却（${D.SELLBACK.attach}）`);
         return null;
       }
       if (P.machines.length <= 1) return '工場に機械が無い状態にはできません';
@@ -356,9 +384,9 @@ const Engine = (() => {
       return null;
     },
     borrow(s, P, a) {
-      const amt = a.amt | 0;
+      const amt = int(a.amt);
       if (s.period <= 1) return '1期目は借入できません';
-      if (amt <= 0 || amt % 10) return '借入額は10単位で指定してください';
+      if (amt <= 0 || amt % R.loanUnit) return `借入額は${R.loanUnit}単位で指定してください`;
       if (amt > borrowRoom(P)) return `借入枠（${borrowRoom(P)}）を超えています`;
       const interest = Math.ceil(amt * P.rate);
       book(P, 'オ', amt, '銀行借入');
@@ -368,7 +396,7 @@ const Engine = (() => {
       return null;
     },
     repay(s, P, a) {
-      const amt = a.amt | 0;
+      const amt = int(a.amt);
       if (amt <= 0) return '返済額を指定してください';
       if (amt > P.loan) return '借入残高を超えています';
       if (amt > P.cash) return '現金が足りません';
@@ -381,18 +409,18 @@ const Engine = (() => {
 
   const ruleA = {
     buyMat(s, P, a) {
-      const buys = a.buys || {};
-      const disc = P.chips.md ? 2 : 0;
+      const buys = a.buys && typeof a.buys === 'object' ? a.buys : {};
+      const disc = P.chips.md ? R.mdDiscount : 0;
       let total = 0, cost = 0;
       const lines = [];
-      for (const [mid, qRaw] of Object.entries(buys)) {
-        const q = qRaw | 0;
+      for (const mid of Object.keys(buys)) {
+        const q = int(buys[mid]);
         if (q < 0) return '数量が不正です';
         if (!q) continue;
         let price;
         if (mid === 'stocker') price = D.STOCKER_PRICE;
         else {
-          if (!MK[mid]) return '不明なマーケットです';
+          if (!isMarket(mid)) return '不明なマーケットです';
           const m = s.markets.find(x => x.id === mid);
           if (q > m.mats) return `${MK[mid].name}の材料は残り${m.mats}個です`;
           price = MK[mid].mat;
@@ -413,7 +441,7 @@ const Engine = (() => {
       return null;
     },
     buyEquip(s, P, a) {
-      const small = a.small | 0, attach = a.attach | 0, large = a.large | 0;
+      const small = int(a.small), attach = int(a.attach), large = int(a.large);
       if (small < 0 || attach < 0 || large < 0 || small + attach + large === 0) return '購入する設備を指定してください';
       const freeSmall = P.machines.filter(m => m.type === 'small' && !m.att).length + small;
       if (attach > freeSmall) return 'アタッチメントは小型機械1台に1つまでです';
@@ -437,7 +465,7 @@ const Engine = (() => {
     },
     produce(s, P, a) {
       const cap = prodCap(P);
-      const c = a.complete | 0, n = a.insert | 0;
+      const c = int(a.complete), n = int(a.insert);
       if (c < 0 || n < 0 || c + n === 0) return '完成・投入の個数を指定してください';
       if (!cap) return '生産能力がありません（機械とワーカーが必要）';
       if (c > Math.min(cap, P.wip)) return `完成は最大${Math.min(cap, P.wip)}個です`;
@@ -450,7 +478,7 @@ const Engine = (() => {
       return null;
     },
     hire(s, P, a) {
-      const w = a.w | 0, sm = a.s | 0;
+      const w = int(a.w), sm = int(a.s);
       if (w < 0 || sm < 0 || w + sm === 0) return '採用人数を指定してください';
       const cost = (w + sm) * D.PRICE.hire;
       if (cost > P.cash) return '現金が足りません';
@@ -460,9 +488,10 @@ const Engine = (() => {
       return null;
     },
     ad(s, P, a) {
-      const n = a.n | 0;
+      const n = int(a.n);
       if (n < 1) return '枚数を指定してください';
-      if (P.chips.red + n > 2 * P.salesmen) return `広告はセールスマン1人につき2枚までしか有効になりません（あと${Math.max(0, 2 * P.salesmen - P.chips.red)}枚）`;
+      const room = Math.max(0, R.adPerSalesman * P.salesmen - P.chips.red);
+      if (n > room) return `広告はセールスマン1人につき${R.adPerSalesman}枚までしか有効になりません（あと${room}枚）`;
       if (n * D.PRICE.red > P.cash) return '現金が足りません';
       book(P, 'セ', n * D.PRICE.red, `広告 赤チップ${n}枚`);
       P.chips.red += n;
@@ -480,90 +509,161 @@ const Engine = (() => {
       log(s, P.id, '意思決定なし（パス）');
       return null;
     },
+    // 商品販売：親はマーケットと個数だけを宣言する。価格は参加者が決まってから全員が決める
     sell(s, P, a) {
-      const offers = (a.offers || []).map(o => ({ m: o.m, q: o.q | 0, p: o.p | 0 })).filter(o => o.q > 0);
-      if (!offers.length) return '販売するマーケットと個数を指定してください';
-      const seen = new Set();
-      for (const o of offers) {
-        if (!MK[o.m]) return '不明なマーケットです';
+      const offers = [], seen = new Set();
+      for (const o of arr(a.offers)) {
+        const q = int(o && o.q);
+        if (q <= 0) continue;
+        if (!isMarket(o.m)) return '不明なマーケットです';
         if (seen.has(o.m)) return '同じマーケットが重複しています';
         seen.add(o.m);
-        if (o.q > empty(s, o.m)) return `${MK[o.m].name}の空きは${empty(s, o.m)}個です`;
-        if (o.p < 1 || o.p > MK[o.m].cap) return `${MK[o.m].name}の入札価格は1〜${MK[o.m].cap}です`;
+        if (q > empty(s, o.m)) return `${MK[o.m].name}の空きは${empty(s, o.m)}個です`;
+        offers.push({ m: o.m, q });
       }
+      if (!offers.length) return '販売するマーケットと個数を指定してください';
       const tq = sum(offers.map(o => o.q));
       if (tq > salesCap(P)) return `販売能力（${salesCap(P)}個）を超えています`;
       if (tq > P.prod) return `製品は${P.prod}個しかありません`;
-      const waiting = s.order.filter(id => id !== P.id && s.players[id].prod > 0 && salesCap(s.players[id]) > 0);
+      const kids = s.order.filter(id => id !== P.id && canSell(s.players[id]));
       s.phase = 'auction';
-      s.pending = { kind: 'auction', parent: P.id, offers, bids: {}, waiting };
-      log(s, P.id, `商品販売：${offers.map(o => `${MK[o.m].name}${o.q}個`).join('・')}で入札開始`);
-      if (!waiting.length) resolveAuction(s);
+      s.pending = { kind: 'auction', parent: P.id, offers, stage: 'join', round: 1, joins: {}, prices: {}, waiting: kids };
+      log(s, P.id, `販売宣言：${offerText(offers)}。${kids.length ? '入札への参加を受け付けます' : '参加できる会社はありません'}`);
+      if (!kids.length) startPricing(s);
       return null;
     },
   };
 
-  function doBid(s, P, a) {
-    if (s.phase !== 'auction') return '入札中ではありません';
+  // ---------- 入札（参加 → 価格 → 必要なら再入札） ----------
+  // 子の参加：マーケットごとに個数（親が出した個数まで）。参加の有無と個数は全員に公開
+  function doJoin(s, P, a) {
+    if (s.phase !== 'auction' || s.pending.stage !== 'join') return '入札への参加を受け付けていません';
     const pd = s.pending;
-    if (!pd.waiting.includes(P.id)) return '入札の対象ではありません';
-    if (pd.round === 2) {
-      // 再入札：数量は最初の応札のまま、価格だけ出し直す（出さなかったマーケットは辞退）
-      const re = [];
-      for (const b of (a.bids || [])) {
-        const r = pd.rebid[b.m];
-        if (!r || !r.pids.includes(P.id)) return '再入札の対象ではないマーケットです';
-        const p = b.p | 0;
-        if (p < 1 || p > MK[b.m].cap) return `${MK[b.m].name}の入札価格は1〜${MK[b.m].cap}です`;
-        re.push({ m: b.m, p });
-      }
-      pd.rebids[P.id] = re;
-      pd.waiting = pd.waiting.filter(x => x !== P.id);
-      if (!pd.waiting.length) resolveAuction(s);
-      return null;
-    }
-    const bids = (a.bids || []).map(b => ({ m: b.m, q: b.q | 0, p: b.p | 0 })).filter(b => b.q > 0);
-    for (const b of bids) {
-      const o = pd.offers.find(x => x.m === b.m);
+    if (!pd.waiting.includes(P.id)) return '参加の対象ではありません';
+    const joins = [], seen = new Set();
+    for (const j of arr(a.joins)) {
+      const q = int(j && j.q);
+      if (q <= 0) continue;
+      const o = pd.offers.find(x => x.m === j.m);
       if (!o) return '親が出していないマーケットです';
-      if (b.q > o.q) return `${MK[b.m].name}は最大${o.q}個までです`;
-      if (b.p < 1 || b.p > MK[b.m].cap) return `${MK[b.m].name}の入札価格は1〜${MK[b.m].cap}です`;
+      if (seen.has(o.m)) return '同じマーケットが重複しています';
+      seen.add(o.m);
+      if (q > o.q) return `${MK[o.m].name}は最大${o.q}個までです`;
+      joins.push({ m: o.m, q });
     }
-    const tq = sum(bids.map(b => b.q));
+    const tq = sum(joins.map(j => j.q));
     if (tq > salesCap(P)) return `販売能力（${salesCap(P)}個）を超えています`;
     if (tq > P.prod) return `製品は${P.prod}個しかありません`;
-    pd.bids[P.id] = bids;
+    pd.joins[P.id] = joins;
+    pd.waiting = pd.waiting.filter(x => x !== P.id);
+    log(s, P.id, joins.length ? `入札に参加：${offerText(joins)}` : '入札に参加しない');
+    if (!pd.waiting.length) startPricing(s);
+    return null;
+  }
+
+  // 参加者が出そろったら価格を決める。参加者のいないマーケットは親が上限価格で売れる
+  function startPricing(s) {
+    const pd = s.pending;
+    const kids = s.order.filter(id => pd.joins[id] && pd.joins[id].length);
+    pd.stage = 'price';
+    pd.prices = {};
+    if (!kids.length) {
+      log(s, null, `参加者なし。${s.players[pd.parent].company}は上限価格で販売します。`);
+      resolveAuction(s);
+      return;
+    }
+    pd.waiting = [pd.parent, ...kids];
+    log(s, null, `参加は${kids.map(id => s.players[id].company).join('・')}。全員が入札価格を決めます。`);
+  }
+
+  // 親が価格を決めるマーケット（子が参加したところだけ）
+  const parentPriceMarkets = (s, pd) => pd.offers.filter(o => kidEntries(s, pd, o.m).length).map(o => o.m);
+
+  function doPrice(s, P, a) {
+    if (s.phase !== 'auction' || s.pending.stage !== 'price') return '入札価格を決める段階ではありません';
+    const pd = s.pending;
+    if (!pd.waiting.includes(P.id)) return '入札価格を決める対象ではありません';
+    const need = P.id === pd.parent ? parentPriceMarkets(s, pd) : (pd.joins[P.id] || []).map(j => j.m);
+    const prices = {};
+    for (const b of arr(a.prices)) {
+      if (!b || !need.includes(b.m)) return '入札価格を決める対象ではないマーケットです';
+      const p = int(b.p);
+      if (p < 1 || p > MK[b.m].cap) return `${MK[b.m].name}の入札価格は1〜${MK[b.m].cap}です`;
+      prices[b.m] = p;
+    }
+    for (const m of need) if (prices[m] == null) return `${MK[m].name}の入札価格を決めてください`;
+    pd.prices[P.id] = prices;
     pd.waiting = pd.waiting.filter(x => x !== P.id);
     if (!pd.waiting.length) resolveAuction(s);
     return null;
   }
 
-  // 入札の比較は競争価格（入札価格 −2（親）−2×青チップ）で行う
-  function childBids(pd, m) {
-    return Object.entries(pd.bids).map(([pid, bids]) => ({ pid, b: bids.find(x => x.m === m) })).filter(x => x.b);
+  // 再入札：数量は参加したときのまま、価格だけ出し直す（出さなかったマーケットは辞退）
+  function doRebid(s, P, a) {
+    if (s.phase !== 'auction' || s.pending.stage !== 'rebid') return '再入札中ではありません';
+    const pd = s.pending;
+    if (!pd.waiting.includes(P.id)) return '再入札の対象ではありません';
+    const re = {};
+    for (const b of arr(a.prices)) {
+      const r = b && isMarket(b.m) && hasOwn(pd.rebid, b.m) ? pd.rebid[b.m] : null;
+      if (!r || !r.pids.includes(P.id)) return '再入札の対象ではないマーケットです';
+      const p = int(b.p);
+      if (p < 1 || p > MK[b.m].cap) return `${MK[b.m].name}の入札価格は1〜${MK[b.m].cap}です`;
+      re[b.m] = p;
+    }
+    pd.rebids[P.id] = re;
+    pd.waiting = pd.waiting.filter(x => x !== P.id);
+    if (!pd.waiting.length) resolveAuction(s);
+    return null;
   }
-  const compOf = (s, pid, p, parent) => p - (parent ? 2 : 0) - 2 * s.players[pid].chips.blue;
+
+  // マーケット m に参加した子（手番順）。価格は決まっていれば入る
+  function kidEntries(s, pd, m) {
+    const out = [];
+    for (const pid of s.order) {
+      const j = (pd.joins[pid] || []).find(x => x.m === m);
+      if (j) out.push({ pid, q: j.q, p: pd.prices[pid] ? pd.prices[pid][m] : undefined });
+    }
+    return out;
+  }
+  const parentPrice = (pd, m) => (pd.prices[pd.parent] && pd.prices[pd.parent][m] != null ? pd.prices[pd.parent][m] : MK[m].cap);
+
+  // 入札の比較は競争価格（入札価格 −2（親）−2×青チップ）で行う
+  const compOf = (s, pid, p, parent) => p - (parent ? R.parentEdge : 0) - R.blueEdge * s.players[pid].chips.blue;
   // 子が1人以上応札し、親も含めて全員の競争価格が同じなら親の負け
   function allSame(s, pd, o) {
-    const kids = childBids(pd, o.m), c = compOf(s, pd.parent, o.p, true);
-    return kids.length > 0 && kids.every(k => compOf(s, k.pid, k.b.p, false) === c);
+    const kids = kidEntries(s, pd, o.m), c = compOf(s, pd.parent, parentPrice(pd, o.m), true);
+    return kids.length > 0 && kids.every(k => compOf(s, k.pid, k.p, false) === c);
+  }
+
+  // 各マーケットの状況（公開情報）：空き・親と参加者の個数・全員分の空きがあるか
+  function auctionSummary(s) {
+    const pd = s.pending;
+    if (!pd || pd.kind !== 'auction') return [];
+    return pd.offers.map(o => {
+      const kids = kidEntries(s, pd, o.m).map(k => ({ pid: k.pid, q: k.q }));
+      const room = empty(s, o.m);
+      const total = o.q + sum(kids.map(k => k.q));
+      return { m: o.m, room, parentQ: o.q, kids, total, allSell: total <= room };
+    });
   }
 
   function resolveAuction(s) {
     const pd = s.pending;
     const parent = s.players[pd.parent];
     // 全員同じ競争価格のマーケットは親の負け。子が2人以上いて空きに全員分が入らなければ、子だけで再入札
-    if (pd.round !== 2) {
+    if (pd.stage === 'price') {
       const rebid = {};
       for (const o of pd.offers) {
-        const kids = childBids(pd, o.m);
-        if (kids.length >= 2 && allSame(s, pd, o) && sum(kids.map(k => k.b.q)) > empty(s, o.m)) {
-          rebid[o.m] = { comp: compOf(s, pd.parent, o.p, true), pids: kids.map(k => k.pid) };
+        const kids = kidEntries(s, pd, o.m);
+        if (kids.length >= 2 && allSame(s, pd, o) && sum(kids.map(k => k.q)) > empty(s, o.m)) {
+          rebid[o.m] = { comp: compOf(s, pd.parent, parentPrice(pd, o.m), true), pids: kids.map(k => k.pid) };
         }
       }
       if (Object.keys(rebid).length) {
-        pd.round = 2; pd.rebid = rebid; pd.rebids = {};
-        pd.waiting = [...new Set(Object.values(rebid).flatMap(r => r.pids))];
+        pd.stage = 'rebid'; pd.round = 2; pd.rebid = rebid; pd.rebids = {};
+        const set = new Set(Object.values(rebid).flatMap(r => r.pids));
+        pd.waiting = s.order.filter(id => set.has(id));
         for (const [m, r] of Object.entries(rebid)) log(s, null, `${MK[m].name}は全員が競争価格${r.comp}で同じため親（${parent.company}）の負け。子だけで再入札します。`);
         return;
       }
@@ -574,14 +674,14 @@ const Engine = (() => {
       const market = s.markets.find(x => x.id === o.m);
       const room = mk.vol - market.mats;          // このセリで売れる総数＝マーケットの空き
       const same = allSame(s, pd, o);
-      const rb = pd.rebid && pd.rebid[o.m];
-      const entries = [{ pid: pd.parent, q: o.q, p: o.p, parent: true, lost: same }];
-      for (const { pid, b } of childBids(pd, o.m)) {
+      const rb = pd.rebid && hasOwn(pd.rebid, o.m) ? pd.rebid[o.m] : null;
+      const entries = [{ pid: pd.parent, q: o.q, p: parentPrice(pd, o.m), parent: true, lost: same }];
+      for (const k of kidEntries(s, pd, o.m)) {
         if (rb) {
-          const nb = (pd.rebids[pid] || []).find(x => x.m === o.m);
-          if (nb) entries.push({ pid, q: b.q, p: nb.p, p1: b.p, parent: false, rebid: true });
-          else entries.push({ pid, q: b.q, p: b.p, parent: false, rebid: true, withdrew: true });
-        } else entries.push({ pid, q: b.q, p: b.p, parent: false });
+          const np = pd.rebids[k.pid] && pd.rebids[k.pid][o.m];
+          if (np != null) entries.push({ pid: k.pid, q: k.q, p: np, p1: k.p, parent: false, rebid: true });
+          else entries.push({ pid: k.pid, q: k.q, p: k.p, parent: false, rebid: true, withdrew: true });
+        } else entries.push({ pid: k.pid, q: k.q, p: k.p, parent: false });
       }
       for (const e of entries) {
         e.blue = s.players[e.pid].chips.blue;
@@ -596,7 +696,7 @@ const Engine = (() => {
         const Pl = s.players[e.pid];
         e.rank = i + 1;
         e.sold = e.withdrew ? 0 : Math.max(0, Math.min(e.q, left, Pl.prod));
-        e.price = Math.min(e.p + (Pl.chips.mr ? 2 : 0), mk.cap);
+        e.price = Math.min(e.p + (Pl.chips.mr ? R.mrBonus : 0), mk.cap);
         if (e.sold) {
           Pl.prod -= e.sold;
           book(Pl, 'キ', e.sold * e.price, `売上 ${mk.name} ${e.price}×${e.sold}`);
@@ -609,7 +709,8 @@ const Engine = (() => {
       });
       results.push({ m: o.m, q: o.q, room, entries, same, rebidComp: rb ? rb.comp : null });
     }
-    s.lastAuction = { parent: parent.id, results, at: s.rev };
+    s.auctionSeq = (s.auctionSeq || 0) + 1;
+    s.lastAuction = { n: s.auctionSeq, parent: parent.id, results, at: s.rev };
     s.pending = null;
     s.phase = 'turn';
     endTurn(s);
@@ -617,7 +718,7 @@ const Engine = (() => {
 
   function doRiskChoice(s, P, a) {
     if (s.phase !== 'risk' || s.pending.pid !== P.id) return '選択の対象ではありません';
-    const pd = s.pending, q = a.qty | 0;
+    const pd = s.pending, q = int(a.qty);
     if (q < 0 || q > pd.max) return `0〜${pd.max}個で指定してください`;
     if (pd.kind === 'special') {
       if (q * pd.price > P.cash) return '現金が足りません';
@@ -656,8 +757,7 @@ const Engine = (() => {
     book(P, 'ス', ec.ス, `期末 製造経費（機械延べ${ec.machines}台）`);
     book(P, 'セ', ec.セ, `期末 販売費（セールスマン${P.salesmen}人${ec.unrepS ? `＋退職${ec.unrepS}人` : ''}）`);
     book(P, 'ソ', ec.ソ, `期末 一般管理費（${ec.heads}人）`);
-    const cashBeforeEmergency = P.cash;
-    emergency(s, P);
+    const emergencyAmt = emergency(s, P);
 
     // 減価償却
     let dep = 0;
@@ -716,7 +816,7 @@ const Engine = (() => {
       special: { fire: m1.lossV, mistake: w.lossV, theft: p.lossV, machine: machineLoss, ins: A.ins, saleGain }, specialTotal: special,
       pretax, prevRE, tax, net, re: P.re,
       cost: { m: m1, w, p },
-      endCost: ec, emergency: cashBeforeEmergency < 0 ? Math.ceil(-cashBeforeEmergency / 10) * 10 : 0,
+      endCost: ec, emergency: emergencyAmt,
       bs: { cash: P.cash, mat: P.matV, wip: P.wipV, prod: P.prodV, fixed, assets, loan: P.loan, taxDue: P.taxDue, liab, capital: D.CAPITAL, re: P.re, equity, diff: assets - liab - equity },
       cols: { ...C },
       inv: { mat: P.mat, wip: P.wip, prod: P.prod },
@@ -728,19 +828,41 @@ const Engine = (() => {
     P.skip = false;
   }
 
-  // オンライン配信用：入札内容を隠す
-  function publicView(s) {
+  // オンライン配信用：入札価格と参加者の端末IDを隠す。history:false なら決算の履歴を省く（期末にだけ送る）
+  function publicView(s, opts) {
     const c = JSON.parse(JSON.stringify(s));
-    if (c.pending && c.pending.kind === 'auction') {
-      c.pending.bids = Object.fromEntries(Object.keys(c.pending.bids).map(k => [k, 'sealed']));
-      if (c.pending.rebids) c.pending.rebids = Object.fromEntries(Object.keys(c.pending.rebids).map(k => [k, 'sealed']));
+    for (const id of c.order) {
+      delete c.players[id].owner;
+      if (opts && opts.history === false) c.players[id].history = null;
+    }
+    const pd = c.pending;
+    if (pd && pd.kind === 'auction') {
+      pd.prices = Object.fromEntries(Object.keys(pd.prices || {}).map(k => [k, 'sealed']));
+      if (pd.rebids) pd.rebids = Object.fromEntries(Object.keys(pd.rebids).map(k => [k, 'sealed']));
     }
     return c;
   }
 
+  // 古い版のセーブを今の形式にする。移せないときは null
+  function migrate(s) {
+    if (!s || typeof s !== 'object' || !s.players || !Array.isArray(s.order)) return null;
+    if (s.v === VERSION) return s;
+    if (s.v === 1) {
+      if (s.phase === 'auction') return null;   // 入札の途中は新しい入札の形に移せない
+      s.cardSeq = 0; s.auctionSeq = 0;
+      if (s.lastCard) s.lastCard.n = 0;
+      if (s.lastAuction) s.lastAuction.n = 0;
+      s.v = VERSION;
+      return s;
+    }
+    return null;
+  }
+
   return {
-    newGame, act, waitingFor, curPid, prodCap, salesCap, machineCap, empty, netAssets, borrowRoom,
-    estEndCost, endCostBreakdown, publicView, MK,
+    VERSION, newGame, act, waitingFor, curPid, prodCap, salesCap, machineCap, staffedMachines, canSell, empty,
+    netAssets, borrowRoom, estEndCost, endCostBreakdown, publicView, migrate, auctionSummary, kidEntries,
+    parentPriceMarkets: (s) => (s.pending && s.pending.kind === 'auction' ? parentPriceMarkets(s, s.pending) : []),
+    compOf, MK, isMarket,
   };
 })();
 
