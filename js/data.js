@@ -1,5 +1,5 @@
 // マネジメントゲーム 製造業・ジュニアルール — ルールの数値
-// ルール表（写真）から読み取った値。ここを書き換えればルールを調整できる。
+// ルール表（写真）から読み取った値。ここを書き換えればルールを調整できる（画面・CPU・ルール表もここを参照する）。
 'use strict';
 
 const MG = {};
@@ -29,6 +29,18 @@ MG.SELLBACK = { small: 50, attach: 10, large: 100 };   // 機械売却 イ
 MG.DEPR = { small: 10, attach: 2, large: 20 };         // 減価償却（ジュニア）
 MG.INSURANCE = { fire: 8, theft: 10 };
 
+// 能力・効果の数値
+MG.RULE = {
+  capSmall: 1, capAttach: 1, capLarge: 4, capPac: 1,   // 生産能力：小型・アタッチメント・大型・PAC（機械1台につき）
+  salesPerSalesman: 2, salesPerAd: 2, adPerSalesman: 2, // 販売能力：セールスマン1人・広告1枚、セールスマン1人あたりの有効な広告枚数
+  mdDiscount: 2,                                       // マーチャンダイザー：材料1個の値引き
+  mrBonus: 2,                                          // マーケットリサーチ：売上単価の上乗せ（上限価格まで）
+  parentEdge: 2,                                       // 親の価格競争力
+  blueEdge: 2,                                         // 青チップ1枚の価格競争力
+  loanUnit: 10,                                        // 借入・緊急借入の単位
+  maxSeats: 6,                                         // 参加できる会社数
+};
+
 // 期末費用単価表：労務費(ワーカー) 製造経費(機械) 販売費(セールスマン) 一般管理費(人)
 // wl / sl は途中退職し補充しなかった人の単価（カッコ内）
 MG.END_COST = {
@@ -38,7 +50,8 @@ MG.END_COST = {
   4: { w: 21, wl: 16, m: 26, s: 21, sl: 16, a: 13 },
   5: { w: 23, wl: 18, m: 28, s: 23, sl: 18, a: 14 },
 };
-MG.endCost = (period) => MG.END_COST[Math.min(5, period)];
+MG.MAX_PERIODS = 5;
+MG.endCost = (period) => MG.END_COST[Math.min(MG.MAX_PERIODS, period)];
 
 // 銀行借入：1期=0、2・3期=純資産の2倍・金利10%、4期以降=純資産の3倍・金利5%
 MG.loanTerms = (period) =>
@@ -53,20 +66,22 @@ MG.RISK_RATIO = 0.2;
 // リスクカード。weight = 山札に入っている枚数。効果は engine.js の applyRisk() に実装。
 // 前半7枚はゼミのカード。後半はルール表に出てくる事象などを元にこちらで作ったもの。
 MG.RETIRE_FEE = 5;   // 退職費（一般管理費 ソ）
+MG.SPECIAL_BUY = { price: 10, max: 5 };   // 材料の特別購入
+MG.MONOPOLY_MAX = 5;                      // 独占販売の上限個数
 MG.RISK_CARDS = [
-  { id: 'quitW',     weight: 2, title: 'ワーカー退職',     text: 'ワーカーを1人退職。退職費5を払う（一般管理費）。' },
-  { id: 'quitS',     weight: 2, title: 'セールスマン退職', text: 'セールスマンを1人退職。退職費5を払う（一般管理費）。' },
-  { id: 'fire',      weight: 2, title: '倉庫火災発生',     text: '倉庫内の材料が燃えてなくなる。保険があったら材料1個につき8もらえる。' },
+  { id: 'quitW',     weight: 2, title: 'ワーカー退職',     text: `ワーカーを1人退職。退職費${MG.RETIRE_FEE}を払う（一般管理費）。` },
+  { id: 'quitS',     weight: 2, title: 'セールスマン退職', text: `セールスマンを1人退職。退職費${MG.RETIRE_FEE}を払う（一般管理費）。` },
+  { id: 'fire',      weight: 2, title: '倉庫火災発生',     text: `倉庫内の材料が燃えてなくなる。保険があったら材料1個につき${MG.INSURANCE.fire}もらえる。` },
   { id: 'sick',      weight: 1, title: '社長が倒れた',     text: '1回休み。' },
   { id: 'reverse',   weight: 2, title: '逆回り',           text: '手番の順序が逆になる。' },
-  { id: 'theft',     weight: 2, title: '窃盗',             text: '営業所で窃盗が起きる。製品がすべて盗まれる。保険があったら製品1個につき10もらえる。' },
+  { id: 'theft',     weight: 2, title: '窃盗',             text: `営業所で窃盗が起きる。製品がすべて盗まれる。保険があったら製品1個につき${MG.INSURANCE.theft}もらえる。` },
   { id: 'breakdown', weight: 1, title: '工場の機械が壊れる', text: '工場の機械が全て壊れる（アタッチメントも含む）。' },
   { id: 'mistake',   weight: 2, title: '製造ミス',       text: '工場の仕掛品1個が不良品となり廃棄。' },
-  { id: 'special',   weight: 2, title: '材料の特別購入', text: '材料を単価10で5個まで購入できる（マーチャンダイザーは無効）。' },
-  { id: 'monopoly',  weight: 2, title: '独占販売',       text: '指定マーケットで、上限価格で製品を5個まで独占販売できる（販売能力以内・マーケットリサーチは無効）。' },
+  { id: 'special',   weight: 2, title: '材料の特別購入', text: `材料を単価${MG.SPECIAL_BUY.price}で${MG.SPECIAL_BUY.max}個まで購入できる（マーチャンダイザーは無効）。` },
+  { id: 'monopoly',  weight: 2, title: '独占販売',       text: `指定マーケットで、上限価格で製品を${MG.MONOPOLY_MAX}個まで独占販売できる（販売能力以内・マーケットリサーチは無効）。` },
   { id: 'rdHit',     weight: 1, title: '研究開発の成功', text: '研究開発チップ（青）を1枚無償で獲得。' },
   { id: 'rdFail',    weight: 1, title: '研究開発の失敗', text: '研究開発チップ（青）を1枚失う。' },
-  { id: 'adHit',     weight: 1, title: '広告が大ヒット', text: '広告チップ（赤）を1枚無償で獲得（セールスマン1人につき2枚まで）。' },
+  { id: 'adHit',     weight: 1, title: '広告が大ヒット', text: `広告チップ（赤）を1枚無償で獲得（セールスマン1人につき${MG.RULE.adPerSalesman}枚まで）。` },
   { id: 'claim',     weight: 1, title: 'クレーム発生',   text: '製品1個を回収・廃棄する（保険の対象外）。' },
 ];
 
@@ -80,6 +95,15 @@ MG.COLS = {
 MG.COLS_IN = ['イ', 'エ', 'オ', 'カ', 'キ'];
 MG.COLS_OUT = ['ケ', 'コ', 'サ', 'シ', 'ス', 'セ', 'ソ', 'タ', 'チ', 'ツ', 'ナ', 'ニ'];
 
+// ルールBのチップ：科目と名前
+MG.CHIPS = {
+  yellow: { col: 'ソ', label: '保険（黄）', short: '保険(黄)' },
+  pac:    { col: 'ス', label: 'PAC生産性（緑）', short: 'PAC(緑)' },
+  md:     { col: 'ソ', label: 'マーチャンダイザー（緑）', short: 'マーチャンダイザー(緑)' },
+  mr:     { col: 'セ', label: 'マーケットリサーチ（緑）', short: 'マーケットリサーチ(緑)' },
+};
+
 MG.COMPANY_COLORS = ['#c8372d', '#1f5fbf', '#2f8a3c', '#d9a514', '#7a4fb3', '#e06c1b'];
+MG.AI_TYPES = ['堅実', '積極', 'バランス'];
 
 if (typeof module !== 'undefined') module.exports = MG;
